@@ -1,0 +1,837 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="3.7.0">Jekyll</generator><link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" /><link href="http://localhost:4000/" rel="alternate" type="text/html" /><updated>2018-01-09T15:37:36+00:00</updated><id>http://localhost:4000/</id><title type="html">phil</title><subtitle>Notes about software and data science projects</subtitle><author><name>Philip Tromans</name></author><entry><title type="html">Finetuning InceptionV3 for MapSwipe</title><link href="http://localhost:4000/2018/01/09/finetuning-inceptionv3-for-mapswipe.html" rel="alternate" type="text/html" title="Finetuning InceptionV3 for MapSwipe" /><published>2018-01-09T00:00:00+00:00</published><updated>2018-01-09T00:00:00+00:00</updated><id>http://localhost:4000/2018/01/09/finetuning-inceptionv3-for-mapswipe</id><content type="html" xml:base="http://localhost:4000/2018/01/09/finetuning-inceptionv3-for-mapswipe.html">&lt;p&gt;Much of the world isn’t mapped. This seems odd at first, but it basically comes down to a question of cash, and a large chunk of the world doesn’t have enough of it. Maps are important, and when big charities like the &lt;a href=&quot;https://www.icrc.org/&quot;&gt;Red Cross&lt;/a&gt;, or &lt;a href=&quot;https://www.msf.org.uk&quot;&gt;Médecins Sans Frontières&lt;/a&gt; try to respond to crises, or run public health projects, the lack of mapping is a serious problem. This is why the &lt;a href=&quot;http://www.missingmaps.org/&quot;&gt;Missing Maps&lt;/a&gt; project came into existence. It’s a volunteer project with the goal of putting the world’s most vulnerable people on the map. In more concrete terms, volunteers spend time pouring over satellite imagery, tracing over things like roads and buildings (you can learn more &lt;a href=&quot;http://www.missingmaps.org/&quot;&gt;here&lt;/a&gt;), and this data’s then available for anyone to use. This is a time-consuming process, and much of the world is pretty empty (you don’t see many buildings in the rainforest, or the desert). The &lt;a href=&quot;https://mapswipe.org/&quot;&gt;MapSwipe&lt;/a&gt; app was created to help accelerate the mapping process, by pre-filtering the tiles. MapSwipe users scroll through bits of satellite imagery (in a  mobile app), and identify images with buildings and other features in (depending on the project). Once this data has been gathered it means that the mapping volunteers can maximize their productivity, by going straight to the tiles that need mapping and not waste their time pouring over large expanses of forest (say).&lt;/p&gt;
+
+&lt;p&gt;When I first heard about this, I thought that it sounded like a machine learning problem. I’m not necessarily looking to automate MapSwipe - that might well be quite hard. A good chunk of the tiles in a MapSwipe problem are pretty easy to identify though, and it makes sense for humans to be principally involved in the more difficult ones. A good ML solution could also be used to partially verify the output of the human mappers - it might help notice missing buildings or roads for example. It’s also a useful exercise in trying to solve the eventual MissingMaps problem - generating maps straight from the raw satellite imagery. Before we continue, we need to properly define the MapSwipe problem. MapSwipe is a classification problem - users classify a single tile of satellite imagery as either:&lt;/p&gt;
+
+&lt;table&gt;
+  &lt;thead&gt;
+    &lt;tr&gt;
+      &lt;th style=&quot;text-align: center&quot;&gt;Example&lt;/th&gt;
+      &lt;th style=&quot;text-align: center&quot;&gt;Class&lt;/th&gt;
+    &lt;/tr&gt;
+  &lt;/thead&gt;
+  &lt;tbody&gt;
+    &lt;tr&gt;
+      &lt;td style=&quot;text-align: center&quot;&gt;&lt;img src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/0.jpg&quot; alt=&quot;Example Bad Imagery&quot; /&gt;&lt;/td&gt;
+      &lt;td style=&quot;text-align: center&quot;&gt;&lt;strong&gt;Bad Imagery&lt;/strong&gt; means that something on the ground can’t be seen. This is often because of cloud cover obstructing the satellite’s view, or sometimes because something seems to be broken with the satellite.&lt;/td&gt;
+    &lt;/tr&gt;
+    &lt;tr&gt;
+      &lt;td style=&quot;text-align: center&quot;&gt;&lt;img src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/1.jpg&quot; alt=&quot;Example Built&quot; /&gt;&lt;/td&gt;
+      &lt;td style=&quot;text-align: center&quot;&gt;&lt;strong&gt;Built&lt;/strong&gt; imagery means that there are buildings in view.&lt;/td&gt;
+    &lt;/tr&gt;
+    &lt;tr&gt;
+      &lt;td style=&quot;text-align: center&quot;&gt;&lt;img src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/2.jpg&quot; alt=&quot;Example Empty&quot; /&gt;&lt;/td&gt;
+      &lt;td style=&quot;text-align: center&quot;&gt;&lt;strong&gt;Empty&lt;/strong&gt; imagery contains no buildings.&lt;/td&gt;
+    &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;p&gt;To make life a little easier, I chose to only consider the projects that are solely focussed on finding buildings (roads can be tackled another day).&lt;/p&gt;
+
+&lt;p&gt;For my first attempt at using machine learning to solve the MapSwipe problem, I followed the approach laid out in the first few lectures of the &lt;a href=&quot;http://fast.ai&quot;&gt;fast.ai&lt;/a&gt; course. Basically, you take a neural network that has already been trained to solve the &lt;a href=&quot;https://en.wikipedia.org/wiki/ImageNet&quot;&gt;ImageNet&lt;/a&gt; problem, and adapt it for your own computer vision problem. The next section outlines exactly what I did, but feel free to skip to the results section.&lt;/p&gt;
+&lt;h2 id=&quot;my-first-experiment&quot;&gt;My first experiment&lt;/h2&gt;
+
+&lt;p&gt;All scripts used are present in my &lt;a href=&quot;https://github.com/philiptromans/mapswipe-ml/tree/post-001&quot;&gt;mapswipe-ml&lt;/a&gt; repository.&lt;/p&gt;
+
+&lt;p&gt;I started by generating a dataset. There’s a fuller explanation of the &lt;code class=&quot;highlighter-rouge&quot;&gt;generate_dataset.py&lt;/code&gt; script in the repository, but essentially it downloads as many examples as possible of the three categories: bad imagery, built and empty, whilst keeping the sizes of the three groups the same. The projects that I selected were all that had their &lt;code class=&quot;highlighter-rouge&quot;&gt;lookFor&lt;/code&gt; property set to &lt;code class=&quot;highlighter-rouge&quot;&gt;buildings only&lt;/code&gt;. (It now transpires that there’s a similar category, which some of the newer projects fall into, which is just &lt;code class=&quot;highlighter-rouge&quot;&gt;buildings&lt;/code&gt; - these were not included). This is approximately 1.4 million images. They are split 80-10-10 into a training set, a validation set and a test set.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;python3 generate_dataset.py 124 303 407 692 1166 1333 1440 1599 1788 1901 2020 2158 2293 2473 2644 2671 2809 2978 3121 3310 3440 3610 3764 3906 4103 4242 4355 4543 4743 4877 5061 5169 5291 5368 5519 5688 5870 5990 6027 6175 6310 6498 6628 6637 6646 6794 6807 6918 6930 7049 7056 7064 7108 7124 7125 7260 7280 7281 7605 7738 7871 8059 8324 -k &amp;lt;bing maps api key&amp;gt; -o experiment_1/all_projects_dataset --inner-test-dir-for-keras
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;To actually create the model, I used &lt;a href=&quot;https://keras.io&quot;&gt;Keras&lt;/a&gt; to fine-tune Google’s InceptionV3 model. This means removing its top layer of output neurons, and replacing them with three fully connected output neurons (one for each class), with a Softmax output (see the script for exact details - I’ve omitted a couple of layers for brevity). During the training process, only the top (newly added) layers are trained.&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;python3 train.py --dataset-dir experiment_1/all_projects_dataset --output-dir experiment_1/inception_v3_fine_tuned --fine-tune --num-epochs 1
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;After one epoch of training, you get a model with a validation accuracy of approximately 54%. With extra epochs of fine tuning this increases slightly, but I didn’t feel that it was particularly worth doing. Instead, I thought about the ImageNet problem. ImageNet is primarily concerned with identifying the one object that dominates the foreground of any particular photo. MapSwipe is fundamentally different, in that it’s more about considering the whole image, and any piece of the image may either have something obscuring it (in the case of bad imagery), or a building, which changes the entire image’s classification. The objects being identified are less complex than ImageNet (where you need to be able to, say, differentiate between a cat’s face and a dog’s), but the whole image is more important in the MapSwipe problem (whereas ImageNet has a better separation of foreground and background). Considering this hypothesis, I decided to train all layers of ImageNet for several epochs:&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;python3 train.py --dataset-dir experiment_1/all_projects_dataset --output-dir experiment_1/inception_v3_all_layers --num-epochs 10 --start_model experiment_1/inception_v3_fine_tuned/model.01-0.906-0.539.hdf5
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;I let it train for 9 epochs before stopping it (I was using an Amazon AWS P3.2xlarge instance, which isn’t cheap) to see how it was progressing. The final trained model had a validation accuracy of 65%. The accuracy was always increasing, but the rate of increase had slowed significantly. I suspect that there’s more improvement to be made by training for longer, but I wanted to start analysing the results.&lt;/p&gt;
+
+&lt;p&gt;To classify the test set:&lt;/p&gt;
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;python3 test.py --dataset-dir experiment_1/all_projects_dataset/test/ -m experiment_1/inception_v3_all_layers/model.01-0.906-0.539.hdf5.09-0.737-0.649.hdf5 -o experiment_1/inception_v3_all_layers.results
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;h2 id=&quot;results&quot;&gt;Results&lt;/h2&gt;
+
+&lt;p&gt;The first question on your mind is probably, “How accurate was it?”.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-python&quot; data-lang=&quot;python&quot;&gt;&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;mapswipe_analysis&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;all_projects_solution&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;Solution&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;ground_truth_solutions_file_to_map&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'../experiment_1/all_projects_dataset/test/solutions.csv'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;predictions_file_to_map&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'../experiment_1/inception_v3_all_layers.results'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;all_projects_solution&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;accuracy&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-python&quot; data-lang=&quot;python&quot;&gt;&lt;span class=&quot;mf&quot;&gt;0.6432250733187717&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;p&gt;So, we’re about 64% accurate. This means that 64% of the time, we select the right class for the tile (bad imagery, built, or empty). If we guessed at random, we’d expect to be 33% accurate (there are three classes, so we have a one in three chance of being correct). Let’s break down that accuracy in to a per-category accuracy:&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-python&quot; data-lang=&quot;python&quot;&gt;&lt;span class=&quot;n&quot;&gt;category_accuracies_df&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;pd&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;DataFrame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;all_projects_solution&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;category_accuracies&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;index&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;class_names&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;columns&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'Test dataset'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;])&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;display&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;HTML&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;category_accuracies_df&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;transpose&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;to_html&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()))&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;
+&lt;table border=&quot;1&quot; class=&quot;dataframe&quot;&gt;
+&lt;thead&gt;
+&lt;tr style=&quot;text-align: right;&quot;&gt;
+&lt;th&gt;&lt;/th&gt;
+&lt;th&gt;bad_imagery&lt;/th&gt;
+&lt;th&gt;built&lt;/th&gt;
+&lt;th&gt;empty&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;th&gt;Test dataset&lt;/th&gt;
+&lt;td&gt;0.552432&lt;/td&gt;
+&lt;td&gt;0.667687&lt;/td&gt;
+&lt;td&gt;0.709556&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;/figure&gt;
+
+&lt;p&gt;It seems almost suspicious that our bad image detection accuracy is so much lower than the other categories. Let’s break down this accuracy data further into a confusion matrix:&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-python&quot; data-lang=&quot;python&quot;&gt;&lt;span class=&quot;n&quot;&gt;conf_matrix_df&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;pd&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;DataFrame&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;all_projects_solution&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;confusion_matrix&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;index&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;class_names&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;columns&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;class_names&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;display&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;HTML&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;conf_matrix_df&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;to_html&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()))&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;
+&lt;table border=&quot;1&quot; class=&quot;dataframe&quot;&gt;
+&lt;thead&gt;
+&lt;tr style=&quot;text-align: right;&quot;&gt;
+&lt;th&gt;&lt;/th&gt;
+&lt;th&gt;bad_imagery&lt;/th&gt;
+&lt;th&gt;built&lt;/th&gt;
+&lt;th&gt;empty&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;th&gt;bad_imagery&lt;/th&gt;
+&lt;td&gt;27062&lt;/td&gt;
+&lt;td&gt;3441&lt;/td&gt;
+&lt;td&gt;18484&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;th&gt;built&lt;/th&gt;
+&lt;td&gt;4061&lt;/td&gt;
+&lt;td&gt;32708&lt;/td&gt;
+&lt;td&gt;12218&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;th&gt;empty&lt;/th&gt;
+&lt;td&gt;9955&lt;/td&gt;
+&lt;td&gt;4273&lt;/td&gt;
+&lt;td&gt;34759&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;/figure&gt;
+
+&lt;p&gt;The rows correspond to what our model predicted, and the columns correspond to the official solution. If our model was perfect, we’d expect to have non-zero entries on the main diagonal (top left to bottom right), and zeroes everywhere else. The biggest non-zero entry corresponds to examples that officially (according to the MapSwipe data) are bad imagery, but our model has classified as empty. Let’s take a look at the examples where we were most confident that the imagery was empty, but was actually bad (according to the official solution).&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-python&quot; data-lang=&quot;python&quot;&gt;&lt;span class=&quot;n&quot;&gt;quadkeys&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;x&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;x&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_projects_solution&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;classified_as&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;predicted_class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'empty'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;solution_class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'bad_imagery'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;9&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]]&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;tableau&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;quadkeys&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_projects_solution&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;
+&lt;table&gt;&lt;tr&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=13.111580118251638~102.777099609375&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212212003211000&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/3.jpg&quot; /&gt;&lt;br /&gt;PV:[0.01397401 0.02337974 0.96264625]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=12.972442010578362~102.75100708007812&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212212023002101&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/4.jpg&quot; /&gt;&lt;br /&gt;PV:[0.02471545 0.0167773  0.95850724]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=13.890077963248643~102.76473999023438&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212210001023113&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/5.jpg&quot; /&gt;&lt;br /&gt;PV:[0.02505477 0.02580438 0.9491408 ]&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=15.02570678068517~105.79421997070312&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212130033101123&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/6.jpg&quot; /&gt;&lt;br /&gt;PV:[0.03569183 0.01793411 0.9463741 ]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=14.487871434931563~105.51132202148438&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212132002033111&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/7.jpg&quot; /&gt;&lt;br /&gt;PV:[0.05563853 0.01403912 0.93032235]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=15.75789280617633~106.43966674804688&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212113031022031&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/8.jpg&quot; /&gt;&lt;br /&gt;PV:[0.0451606  0.02489267 0.9299468 ]&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=14.490530661410489~105.4522705078125&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212123113130320&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/9.jpg&quot; /&gt;&lt;br /&gt;PV:[0.06579539 0.00917824 0.92502636]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=14.171197284392946~105.94528198242188&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212132303011231&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/10.jpg&quot; /&gt;&lt;br /&gt;PV:[0.07165854 0.00919708 0.9191443 ]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=15.884734325453593~106.50283813476562&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212113011332021&lt;/a&gt;&lt;br /&gt;Officially: bad_imagery&lt;br /&gt;Predicted class: empty&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/11.jpg&quot; /&gt;&lt;br /&gt;PV:[0.06143104 0.01993423 0.91863465]&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+
+&lt;/figure&gt;
+
+&lt;p&gt;(note that the prediction vectors have the form &lt;script type=&quot;math/tex&quot;&gt;(\mathbb{P}(\text{bad_imagery}), \mathbb{P}(\text{built}), \mathbb{P}(\text{empty}))&lt;/script&gt;, where &lt;script type=&quot;math/tex&quot;&gt;\mathbb{P}&lt;/script&gt; denotes a probability)&lt;/p&gt;
+
+&lt;p&gt;As you can see, all of these images seem perfectly fine, and all in fact show land with no buildings. Now, we’ve only looked at the 9 that the model’s most confident about, but I’ve skimmed through a large number of them (not included here for brevity) and whilst the occasional one has a small amount of cloud cover, the vast majority are absolutely fine.&lt;/p&gt;
+
+&lt;p&gt;I’m not sure why this is happening, but I have a few hypotheses:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;A significant number of users may be mistaken about the definition of bad imagery, or unsure about what to do for empty tiles (and are triple tapping to feed back that the images are empty, when they should just be ignoring them).&lt;/li&gt;
+  &lt;li&gt;Bing may have updated the imagery since the feedback was gained from the users.
+It’s also interesting to review some other scenarios. Here are some images that the solution defines as empty, but the model believes that they contain buildings:&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-python&quot; data-lang=&quot;python&quot;&gt;&lt;span class=&quot;n&quot;&gt;quadkeys&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;x&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;x&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_projects_solution&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;classified_as&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;predicted_class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'built'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;solution_class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'empty'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;9&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;]]&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;tableau&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;quadkeys&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;all_projects_solution&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;
+&lt;table&gt;&lt;tr&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=14.277692206432462~-90.56716918945312&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;023313133023320231&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/12.jpg&quot; /&gt;&lt;br /&gt;PV:[3.4844992e-03 9.9635458e-01 1.6092640e-04]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=-1.029912794048144~35.5078125&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;300110012122202220&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/13.jpg&quot; /&gt;&lt;br /&gt;PV:[0.00453361 0.9944021  0.00106429]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=14.850558661795276~106.80770874023438&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212131313001333&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/14.jpg&quot; /&gt;&lt;br /&gt;PV:[0.00127954 0.99339586 0.00532465]&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=14.705821604736087~106.8585205078125&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;132212131331330300&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/15.jpg&quot; /&gt;&lt;br /&gt;PV:[0.00491786 0.9876587  0.00742349]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=-24.952444759841555~44.723968505859375&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;300311311302130313&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/16.jpg&quot; /&gt;&lt;br /&gt;PV:[0.010339   0.9842988  0.00536216]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=8.936626875428615~27.21588134765625&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;122320132103323030&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/17.jpg&quot; /&gt;&lt;br /&gt;PV:[0.01284369 0.98264277 0.00451359]&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=8.608178607442497~27.384796142578125&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;122320132313302301&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/18.jpg&quot; /&gt;&lt;br /&gt;PV:[0.01074562 0.9814532  0.00780118]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=9.012589671033297~27.802276611328125&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;122320133102010121&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/19.jpg&quot; /&gt;&lt;br /&gt;PV:[0.01149258 0.98020375 0.00830375]&lt;/td&gt;&lt;td align=&quot;center&quot; style=&quot;text-align: center&quot;&gt;Quadkey: &lt;a href=&quot;http://bing.com/maps/default.aspx?cp=9.051921278888528~27.73773193359375&amp;amp;lvl=18&amp;amp;style=a&quot; target=&quot;_blank&quot;&gt;122320133011300312&lt;/a&gt;&lt;br /&gt;Officially: empty&lt;br /&gt;Predicted class: built&lt;br /&gt;&lt;img align=&quot;center&quot; src=&quot;/assets/2018-01-09-finetuning-inceptionv3-for-mapswipe/20.jpg&quot; /&gt;&lt;br /&gt;PV:[0.01287544 0.9798688  0.00725573]&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+
+&lt;/figure&gt;
+
+&lt;p&gt;So, it’s not quite as open-and-shut as the previous set of examples, but it still helps build confidence in the model, and support the hypothesis that the MapSwipe data is far from accurate.&lt;/p&gt;
+&lt;h3 id=&quot;individual-project-accuracy&quot;&gt;Individual Project Accuracy&lt;/h3&gt;
+
+&lt;p&gt;Everything we’ve done so far has considered one giant dataset, composed of a large number of projects (where each project corresponds to relatively small geographic area). It’s interesting to see if the model’s accuracy varies between the individual projects. To do this, I generated individual datasets for each project (using a similar workflow to that described previously), and then used the same model as before to grade each individual project’s test dataset.&lt;/p&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;&lt;pre&gt;&lt;code class=&quot;language-python&quot; data-lang=&quot;python&quot;&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;json&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;os.path&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;isdir&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;join&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;os&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;urllib.request&lt;/span&gt;
+
+&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;bokeh.plotting&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;figure&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ColumnDataSource&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;bokeh.models&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;HoverTool&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;from&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;bokeh.io&lt;/span&gt; &lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;output_notebook&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;show&lt;/span&gt;
+
+&lt;span class=&quot;k&quot;&gt;with&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;urllib&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;request&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;urlopen&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;http://api.mapswipe.org/projects.json&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;as&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;url&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;projects&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;json&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;loads&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;url&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;read&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;decode&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;())&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;individual_projects_dir&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;'../individual_projects/'&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;project_dirs&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;d&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;d&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;os&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;listdir&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;individual_projects_dir&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;isdir&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;join&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;individual_projects_dir&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;d&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))]&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;project_dirs&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;sort&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;key&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;int&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;project_ids&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[]&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;accuracies&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[]&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;names&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[]&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;tile_counts&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;[]&lt;/span&gt;
+
+&lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;project_id&lt;/span&gt; &lt;span class=&quot;ow&quot;&gt;in&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;project_dirs&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;:&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;solutions_csv&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;join&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;individual_projects_dir&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;project_id&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;'test'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;'solutions.csv'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;os&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;path&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;getsize&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;solutions_csv&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;):&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;solution&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;Solution&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;ground_truth_solutions_file_to_map&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;solutions_csv&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;predictions_file_to_map&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;join&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;individual_projects_dir&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;project_id&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;'initial_inception_v3_all_layers.out'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+        &lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;project_ids&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;append&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;project_id&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;accuracies&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;append&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;solution&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;accuracy&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;*&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;100&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;names&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;append&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;projects&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;project_id&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;][&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'name'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;])&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;tile_counts&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;append&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;solution&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;tile_count&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;output_notebook&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;()&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;source&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ColumnDataSource&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;data&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;nb&quot;&gt;dict&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;x&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;project_ids&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;y&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;accuracies&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;names&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;names&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt;
+    &lt;span class=&quot;n&quot;&gt;tile_counts&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;tile_counts&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;))&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;hover&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;HoverTool&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;tooltips&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Project ID&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;@x&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Accuracy&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;@y&lt;/span&gt;&lt;span class=&quot;si&quot;&gt;%&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Name&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;@names&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;),&lt;/span&gt;
+    &lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Tile count&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;@tile_counts&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;p&quot;&gt;])&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;p&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;figure&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;plot_width&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;800&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;plot_height&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;600&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;tools&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;hover&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;],&lt;/span&gt;
+           &lt;span class=&quot;n&quot;&gt;title&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Test accuracy for each MapSwipe project&quot;&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;p&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;circle&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;'x'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;'y'&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;size&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;10&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;source&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;source&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;
+
+&lt;span class=&quot;n&quot;&gt;show&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;p&lt;/span&gt;&lt;span class=&quot;p&quot;&gt;)&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/figure&gt;
+
+&lt;figure class=&quot;highlight&quot;&gt;
+
+&lt;div class=&quot;bk-root&quot;&gt;
+&lt;a class=&quot;bk-logo bk-logo-small bk-logo-notebook&quot; href=&quot;https://bokeh.pydata.org&quot; target=&quot;_blank&quot;&gt;&lt;/a&gt;
+&lt;span id=&quot;f3f88c38-08fe-4fe0-8da6-ad1850dbac50&quot;&gt;Loading BokehJS ...&lt;/span&gt;
+&lt;/div&gt;
+
+&lt;/figure&gt;
+&lt;script type=&quot;text/javascript&quot;&gt;
+
+(function(root) {
+
+  function now() {
+
+    return new Date();
+
+  }
+
+
+
+  var force = true;
+
+
+
+  if (typeof (root._bokeh_onload_callbacks) === &quot;undefined&quot; || force === true) {
+
+    root._bokeh_onload_callbacks = [];
+
+    root._bokeh_is_loading = undefined;
+
+  }
+
+
+
+  var JS_MIME_TYPE = 'application/javascript';
+
+  var HTML_MIME_TYPE = 'text/html';
+
+  var EXEC_MIME_TYPE = 'application/vnd.bokehjs_exec.v0+json';
+
+  var CLASS_NAME = 'output_bokeh rendered_html';
+
+
+
+  /**
+
+   * Render data to the DOM node
+
+   */
+
+  function render(props, node) {
+
+    var script = document.createElement(&quot;script&quot;);
+
+    node.appendChild(script);
+
+  }
+
+
+
+  /**
+
+   * Handle when an output is cleared or removed
+
+   */
+
+  function handleClearOutput(event, handle) {
+
+    var cell = handle.cell;
+
+
+
+    var id = cell.output_area._bokeh_element_id;
+
+    var server_id = cell.output_area._bokeh_server_id;
+
+    // Clean up Bokeh references
+
+    if (id !== undefined) {
+
+      Bokeh.index[id].model.document.clear();
+
+      delete Bokeh.index[id];
+
+    }
+
+
+
+    if (server_id !== undefined) {
+
+      // Clean up Bokeh references
+
+      var cmd = &quot;from bokeh.io.state import curstate; print(curstate().uuid_to_server['&quot; + server_id + &quot;'].get_sessions()[0].document.roots[0]._id)&quot;;
+
+      cell.notebook.kernel.execute(cmd, {
+
+        iopub: {
+
+          output: function(msg) {
+
+            var element_id = msg.content.text.trim();
+
+            Bokeh.index[element_id].model.document.clear();
+
+            delete Bokeh.index[element_id];
+
+          }
+
+        }
+
+      });
+
+      // Destroy server and session
+
+      var cmd = &quot;import bokeh.io.notebook as ion; ion.destroy_server('&quot; + server_id + &quot;')&quot;;
+
+      cell.notebook.kernel.execute(cmd);
+
+    }
+
+  }
+
+
+
+  /**
+
+   * Handle when a new output is added
+
+   */
+
+  function handleAddOutput(event, handle) {
+
+    var output_area = handle.output_area;
+
+    var output = handle.output;
+
+
+
+    // limit handleAddOutput to display_data with EXEC_MIME_TYPE content only
+
+    if ((output.output_type != &quot;display_data&quot;) || (!output.data.hasOwnProperty(EXEC_MIME_TYPE))) {
+
+      return
+
+    }
+
+
+
+    var toinsert = output_area.element.find(&quot;.&quot; + CLASS_NAME.split(' ')[0]);
+
+
+
+    if (output.metadata[EXEC_MIME_TYPE][&quot;id&quot;] !== undefined) {
+
+      toinsert[0].firstChild.textContent = output.data[JS_MIME_TYPE];
+
+      // store reference to embed id on output_area
+
+      output_area._bokeh_element_id = output.metadata[EXEC_MIME_TYPE][&quot;id&quot;];
+
+    }
+
+    if (output.metadata[EXEC_MIME_TYPE][&quot;server_id&quot;] !== undefined) {
+
+      var bk_div = document.createElement(&quot;div&quot;);
+
+      bk_div.innerHTML = output.data[HTML_MIME_TYPE];
+
+      var script_attrs = bk_div.children[0].attributes;
+
+      for (var i = 0; i &lt; script_attrs.length; i++) {
+
+        toinsert[0].firstChild.setAttribute(script_attrs[i].name, script_attrs[i].value);
+
+      }
+
+      // store reference to server id on output_area
+
+      output_area._bokeh_server_id = output.metadata[EXEC_MIME_TYPE][&quot;server_id&quot;];
+
+    }
+
+  }
+
+
+
+  function register_renderer(events, OutputArea) {
+
+
+
+    function append_mime(data, metadata, element) {
+
+      // create a DOM node to render to
+
+      var toinsert = this.create_output_subarea(
+
+        metadata,
+
+        CLASS_NAME,
+
+        EXEC_MIME_TYPE
+
+      );
+
+      this.keyboard_manager.register_events(toinsert);
+
+      // Render to node
+
+      var props = {data: data, metadata: metadata[EXEC_MIME_TYPE]};
+
+      render(props, toinsert[0]);
+
+      element.append(toinsert);
+
+      return toinsert
+
+    }
+
+
+
+    /* Handle when an output is cleared or removed */
+
+    events.on('clear_output.CodeCell', handleClearOutput);
+
+    events.on('delete.Cell', handleClearOutput);
+
+
+
+    /* Handle when a new output is added */
+
+    events.on('output_added.OutputArea', handleAddOutput);
+
+
+
+    /**
+
+     * Register the mime type and append_mime function with output_area
+
+     */
+
+    OutputArea.prototype.register_mime_type(EXEC_MIME_TYPE, append_mime, {
+
+      /* Is output safe? */
+
+      safe: true,
+
+      /* Index of renderer in `output_area.display_order` */
+
+      index: 0
+
+    });
+
+  }
+
+
+
+  // register the mime type if in Jupyter Notebook environment and previously unregistered
+
+  if (root.Jupyter !== undefined) {
+
+    var events = require('base/js/events');
+
+    var OutputArea = require('notebook/js/outputarea').OutputArea;
+
+
+
+    if (OutputArea.prototype.mime_types().indexOf(EXEC_MIME_TYPE) == -1) {
+
+      register_renderer(events, OutputArea);
+
+    }
+
+  }
+
+
+
+  
+
+  if (typeof (root._bokeh_timeout) === &quot;undefined&quot; || force === true) {
+
+    root._bokeh_timeout = Date.now() + 5000;
+
+    root._bokeh_failed_load = false;
+
+  }
+
+
+
+  var NB_LOAD_WARNING = {'data': {'text/html':
+
+     &quot;&lt;div style='background-color: #fdd'&gt;\n&quot;+
+
+     &quot;&lt;p&gt;\n&quot;+
+
+     &quot;BokehJS does not appear to have successfully loaded. If loading BokehJS from CDN, this \n&quot;+
+
+     &quot;may be due to a slow or bad network connection. Possible fixes:\n&quot;+
+
+     &quot;&lt;/p&gt;\n&quot;+
+
+     &quot;&lt;ul&gt;\n&quot;+
+
+     &quot;&lt;li&gt;re-rerun `output_notebook()` to attempt to load from CDN again, or&lt;/li&gt;\n&quot;+
+
+     &quot;&lt;li&gt;use INLINE resources instead, as so:&lt;/li&gt;\n&quot;+
+
+     &quot;&lt;/ul&gt;\n&quot;+
+
+     &quot;&lt;code&gt;\n&quot;+
+
+     &quot;from bokeh.resources import INLINE\n&quot;+
+
+     &quot;output_notebook(resources=INLINE)\n&quot;+
+
+     &quot;&lt;/code&gt;\n&quot;+
+
+     &quot;&lt;/div&gt;&quot;}};
+
+
+
+  function display_loaded() {
+
+    var el = document.getElementById(&quot;f3f88c38-08fe-4fe0-8da6-ad1850dbac50&quot;);
+
+    if (el != null) {
+
+      el.textContent = &quot;BokehJS is loading...&quot;;
+
+    }
+
+    if (root.Bokeh !== undefined) {
+
+      if (el != null) {
+
+        el.textContent = &quot;BokehJS &quot; + root.Bokeh.version + &quot; successfully loaded.&quot;;
+
+      }
+
+    } else if (Date.now() &lt; root._bokeh_timeout) {
+
+      setTimeout(display_loaded, 100)
+
+    }
+
+  }
+
+
+
+
+
+  function run_callbacks() {
+
+    try {
+
+      root._bokeh_onload_callbacks.forEach(function(callback) { callback() });
+
+    }
+
+    finally {
+
+      delete root._bokeh_onload_callbacks
+
+    }
+
+    console.info(&quot;Bokeh: all callbacks have finished&quot;);
+
+  }
+
+
+
+  function load_libs(js_urls, callback) {
+
+    root._bokeh_onload_callbacks.push(callback);
+
+    if (root._bokeh_is_loading &gt; 0) {
+
+      console.log(&quot;Bokeh: BokehJS is being loaded, scheduling callback at&quot;, now());
+
+      return null;
+
+    }
+
+    if (js_urls == null || js_urls.length === 0) {
+
+      run_callbacks();
+
+      return null;
+
+    }
+
+    console.log(&quot;Bokeh: BokehJS not loaded, scheduling load and callback at&quot;, now());
+
+    root._bokeh_is_loading = js_urls.length;
+
+    for (var i = 0; i &lt; js_urls.length; i++) {
+
+      var url = js_urls[i];
+
+      var s = document.createElement('script');
+
+      s.src = url;
+
+      s.async = false;
+
+      s.onreadystatechange = s.onload = function() {
+
+        root._bokeh_is_loading--;
+
+        if (root._bokeh_is_loading === 0) {
+
+          console.log(&quot;Bokeh: all BokehJS libraries loaded&quot;);
+
+          run_callbacks()
+
+        }
+
+      };
+
+      s.onerror = function() {
+
+        console.warn(&quot;failed to load library &quot; + url);
+
+      };
+
+      console.log(&quot;Bokeh: injecting script tag for BokehJS library: &quot;, url);
+
+      document.getElementsByTagName(&quot;head&quot;)[0].appendChild(s);
+
+    }
+
+  };var element = document.getElementById(&quot;f3f88c38-08fe-4fe0-8da6-ad1850dbac50&quot;);
+
+  if (element == null) {
+
+    console.log(&quot;Bokeh: ERROR: autoload.js configured with elementid 'f3f88c38-08fe-4fe0-8da6-ad1850dbac50' but no matching script tag was found. &quot;)
+
+    return false;
+
+  }
+
+
+
+  var js_urls = [&quot;https://cdn.pydata.org/bokeh/release/bokeh-0.12.13.min.js&quot;, &quot;https://cdn.pydata.org/bokeh/release/bokeh-widgets-0.12.13.min.js&quot;, &quot;https://cdn.pydata.org/bokeh/release/bokeh-tables-0.12.13.min.js&quot;, &quot;https://cdn.pydata.org/bokeh/release/bokeh-gl-0.12.13.min.js&quot;];
+
+
+
+  var inline_js = [
+
+    function(Bokeh) {
+
+      Bokeh.set_log_level(&quot;info&quot;);
+
+    },
+
+    
+
+    function(Bokeh) {
+
+      
+
+    },
+
+    function(Bokeh) {
+
+      console.log(&quot;Bokeh: injecting CSS: https://cdn.pydata.org/bokeh/release/bokeh-0.12.13.min.css&quot;);
+
+      Bokeh.embed.inject_css(&quot;https://cdn.pydata.org/bokeh/release/bokeh-0.12.13.min.css&quot;);
+
+      console.log(&quot;Bokeh: injecting CSS: https://cdn.pydata.org/bokeh/release/bokeh-widgets-0.12.13.min.css&quot;);
+
+      Bokeh.embed.inject_css(&quot;https://cdn.pydata.org/bokeh/release/bokeh-widgets-0.12.13.min.css&quot;);
+
+      console.log(&quot;Bokeh: injecting CSS: https://cdn.pydata.org/bokeh/release/bokeh-tables-0.12.13.min.css&quot;);
+
+      Bokeh.embed.inject_css(&quot;https://cdn.pydata.org/bokeh/release/bokeh-tables-0.12.13.min.css&quot;);
+
+    }
+
+  ];
+
+
+
+  function run_inline_js() {
+
+    
+
+    if ((root.Bokeh !== undefined) || (force === true)) {
+
+      for (var i = 0; i &lt; inline_js.length; i++) {
+
+        inline_js[i].call(root, root.Bokeh);
+
+      }if (force === true) {
+
+        display_loaded();
+
+      }} else if (Date.now() &lt; root._bokeh_timeout) {
+
+      setTimeout(run_inline_js, 100);
+
+    } else if (!root._bokeh_failed_load) {
+
+      console.log(&quot;Bokeh: BokehJS failed to load within specified timeout.&quot;);
+
+      root._bokeh_failed_load = true;
+
+    } else if (force !== true) {
+
+      var cell = $(document.getElementById(&quot;f3f88c38-08fe-4fe0-8da6-ad1850dbac50&quot;)).parents('.cell').data().cell;
+
+      cell.output_area.append_execute_result(NB_LOAD_WARNING)
+
+    }
+
+
+
+  }
+
+
+
+  if (root._bokeh_is_loading === 0) {
+
+    console.log(&quot;Bokeh: BokehJS loaded, going straight to plotting&quot;);
+
+    run_inline_js();
+
+  } else {
+
+    load_libs(js_urls, function() {
+
+      console.log(&quot;Bokeh: BokehJS plotting callback run at&quot;, now());
+
+      run_inline_js();
+
+    });
+
+  }
+
+}(window));
+&lt;/script&gt;
+&lt;figure class=&quot;highlight&quot;&gt;
+
+&lt;div class=&quot;bk-root&quot;&gt;
+&lt;div class=&quot;bk-plotdiv&quot; id=&quot;f1b04ab3-5c9b-4909-a7c8-da0944335d64&quot;&gt;&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;/figure&gt;
+&lt;script type=&quot;text/javascript&quot;&gt;(function(root) {
+
+  function embed_document(root) {
+
+    
+
+  var docs_json = {&quot;91030c53-91f5-4ea7-9d3d-0164c661ba9f&quot;:{&quot;roots&quot;:{&quot;references&quot;:[{&quot;attributes&quot;:{&quot;callback&quot;:null},&quot;id&quot;:&quot;92e34a28-27f2-40af-8fd2-d6ae22470a59&quot;,&quot;type&quot;:&quot;DataRange1d&quot;},{&quot;attributes&quot;:{&quot;active_drag&quot;:&quot;auto&quot;,&quot;active_inspect&quot;:&quot;auto&quot;,&quot;active_scroll&quot;:&quot;auto&quot;,&quot;active_tap&quot;:&quot;auto&quot;,&quot;tools&quot;:[{&quot;id&quot;:&quot;1571c1a2-7905-405a-9a43-65802dafd65c&quot;,&quot;type&quot;:&quot;HoverTool&quot;}]},&quot;id&quot;:&quot;993bb32a-d7df-47c0-8ed4-4c2aa680f2b8&quot;,&quot;type&quot;:&quot;Toolbar&quot;},{&quot;attributes&quot;:{&quot;callback&quot;:null},&quot;id&quot;:&quot;7814cd14-1330-441a-a36c-889074666f71&quot;,&quot;type&quot;:&quot;DataRange1d&quot;},{&quot;attributes&quot;:{},&quot;id&quot;:&quot;b01fbd84-b746-4a17-8849-b80a08ebf02e&quot;,&quot;type&quot;:&quot;BasicTickFormatter&quot;},{&quot;attributes&quot;:{},&quot;id&quot;:&quot;7f0924e1-7f46-4fa4-bd36-afb69b92fde5&quot;,&quot;type&quot;:&quot;LinearScale&quot;},{&quot;attributes&quot;:{&quot;data_source&quot;:{&quot;id&quot;:&quot;1650c1f7-993f-48d4-af77-ca9858301755&quot;,&quot;type&quot;:&quot;ColumnDataSource&quot;},&quot;glyph&quot;:{&quot;id&quot;:&quot;ceef80d4-9009-4f59-96e3-89d6a678a220&quot;,&quot;type&quot;:&quot;Circle&quot;},&quot;hover_glyph&quot;:null,&quot;muted_glyph&quot;:null,&quot;nonselection_glyph&quot;:{&quot;id&quot;:&quot;14ba7200-15a3-4b9b-94ee-67390b1388b3&quot;,&quot;type&quot;:&quot;Circle&quot;},&quot;selection_glyph&quot;:null,&quot;view&quot;:{&quot;id&quot;:&quot;dd6e4a55-b91c-4ad0-8aba-fa4b2ec728a6&quot;,&quot;type&quot;:&quot;CDSView&quot;}},&quot;id&quot;:&quot;dfc8da7d-1c85-4461-a815-4469328db040&quot;,&quot;type&quot;:&quot;GlyphRenderer&quot;},{&quot;attributes&quot;:{},&quot;id&quot;:&quot;6b06e08f-a5bf-48e8-bdc7-63feaed19c1a&quot;,&quot;type&quot;:&quot;LinearScale&quot;},{&quot;attributes&quot;:{&quot;formatter&quot;:{&quot;id&quot;:&quot;a6ba8181-9747-4a4f-8ed8-09da9b5e35ca&quot;,&quot;type&quot;:&quot;BasicTickFormatter&quot;},&quot;plot&quot;:{&quot;id&quot;:&quot;18b2bf94-0495-4e00-a7c9-112d54a0d65d&quot;,&quot;subtype&quot;:&quot;Figure&quot;,&quot;type&quot;:&quot;Plot&quot;},&quot;ticker&quot;:{&quot;id&quot;:&quot;b68ddf38-bfa7-43cf-9979-3580bb375eb2&quot;,&quot;type&quot;:&quot;BasicTicker&quot;}},&quot;id&quot;:&quot;2c64a368-d0c5-40d3-b833-16882ef100ae&quot;,&quot;type&quot;:&quot;LinearAxis&quot;},{&quot;attributes&quot;:{},&quot;id&quot;:&quot;b68ddf38-bfa7-43cf-9979-3580bb375eb2&quot;,&quot;type&quot;:&quot;BasicTicker&quot;},{&quot;attributes&quot;:{&quot;callback&quot;:null,&quot;tooltips&quot;:[[&quot;Project ID&quot;,&quot;@x&quot;],[&quot;Accuracy&quot;,&quot;@y%&quot;],[&quot;Name&quot;,&quot;@names&quot;],[&quot;Tile count&quot;,&quot;@tile_counts&quot;]]},&quot;id&quot;:&quot;1571c1a2-7905-405a-9a43-65802dafd65c&quot;,&quot;type&quot;:&quot;HoverTool&quot;},{&quot;attributes&quot;:{&quot;callback&quot;:null,&quot;column_names&quot;:[&quot;x&quot;,&quot;y&quot;,&quot;names&quot;,&quot;tile_counts&quot;],&quot;data&quot;:{&quot;names&quot;:[&quot;MapSwipe Madagascar&quot;,&quot;MapSwipe Madagascar 2&quot;,&quot;MapSwipe Madagascar 3&quot;,&quot;MapSwipe Guatemala&quot;,&quot;MapSwipe Madagascar 4&quot;,&quot;MapSwipe Madagascar 5&quot;,&quot;MapSwipe Madagascar 6&quot;,&quot;Botswana Malaria Control 1&quot;,&quot;Botswana Malaria Control 2&quot;,&quot;Botswana Malaria Control 3&quot;,&quot;Missing Maps Malawi 2&quot;,&quot;MapSwipe Madagascar 7&quot;,&quot;Missing Maps Malawi 3&quot;,&quot;Map Chad for MSF (part 1)&quot;,&quot;Map South Sudan for MSF (part 1)&quot;,&quot;Map Maswa, Tanzania&quot;,&quot;Botswana Malaria Control 4&quot;,&quot;Map South Sudan for MSF (part 2)&quot;,&quot;Map South Sudan for MSF (part 3)&quot;,&quot;MapSwipe Madagascar 8&quot;,&quot;Botswana Malaria Control 5&quot;,&quot;MapSwipe Madagascar 9&quot;,&quot;Drought in Mara, Kenya&quot;,&quot;Drought in Mara, Kenya (2/2)&quot;,&quot;MapSwipe Madagascar 10&quot;,&quot;MapSwipe Nigeria for MSF 1&quot;,&quot;Botswana Malaria Control 6&quot;,&quot;Map Sierra Leone for MSF&quot;,&quot;MapSwipe Nigeria for MSF 2&quot;,&quot;MapSwipe Nigeria for MSF 3&quot;,&quot;MapSwipe Nigeria for MSF 4&quot;,&quot;Map Sierra Leone for MSF 2&quot;,&quot;Map Sierra Leone for MSF 4&quot;,&quot;Map Sierra Leone for MSF 3&quot;,&quot;Disease elimination on Bijagos islands 1&quot;,&quot;Disease elimination on Bijagos islands 2&quot;,&quot;Disease elimination on Bijagos islands 3&quot;,&quot;Disease elimination on Bijagos islands 5&quot;,&quot;Disease elimination on Bijagos islands 6&quot;,&quot;Botswana Malaria Control 7&quot;,&quot;MapSwipe Nigeria for MSF 5&quot;,&quot;Eliminate Malaria: Cambodia&quot;,&quot;Eliminate Malaria: Cambodia 2&quot;,&quot;Eliminate Malaria: Cambodia 3&quot;,&quot;Eliminate Malaria: Cambodia 4&quot;,&quot;Eliminate Malaria: Laos 2&quot;,&quot;Eliminate Malaria: Laos&quot;,&quot;Eliminate Malaria: Laos 6&quot;,&quot;Eliminate Malaria: Laos 3&quot;,&quot;Eliminate Malaria: Laos 7&quot;,&quot;Prevent FGM: Singida, Tanzania 2&quot;,&quot;Eliminate Malaria: Laos 4&quot;,&quot;Eliminate Malaria: Laos 8&quot;,&quot;Eliminate Malaria: Laos 5&quot;,&quot;MapSwipe Nigeria for MSF 7&quot;,&quot;MapSwipe Nigeria for MSF 8&quot;,&quot;MapSwipe Nigeria for MSF 6&quot;,&quot;MapSwipe Madagascar 11&quot;,&quot;MapSwipe Madagascar 12&quot;,&quot;Prevent FGM: Sawida, Tanzania&quot;,&quot;Prevent FGM: Kulimi, Tanzania&quot;,&quot;Eliminate Malaria: Angola 1&quot;],&quot;tile_counts&quot;:[3999,4557,2868,6372,3840,3168,5361,894,1194,2697,111,3342,744,3990,5379,360,1896,4194,2583,2010,1494,2205,573,3102,6171,7428,1899,717,6444,3762,897,1077,174,366,120,3,21,78,6,1065,1827,690,4236,1524,945,1329,6273,2124,2649,78,1209,3672,414,723,4884,2364,1776,2241,5778,312,75,5121],&quot;x&quot;:[&quot;124&quot;,&quot;303&quot;,&quot;407&quot;,&quot;692&quot;,&quot;1166&quot;,&quot;1333&quot;,&quot;1440&quot;,&quot;1599&quot;,&quot;1788&quot;,&quot;1901&quot;,&quot;2020&quot;,&quot;2158&quot;,&quot;2293&quot;,&quot;2473&quot;,&quot;2644&quot;,&quot;2671&quot;,&quot;2809&quot;,&quot;2978&quot;,&quot;3121&quot;,&quot;3310&quot;,&quot;3440&quot;,&quot;3610&quot;,&quot;3764&quot;,&quot;3906&quot;,&quot;4103&quot;,&quot;4242&quot;,&quot;4355&quot;,&quot;4543&quot;,&quot;4743&quot;,&quot;4877&quot;,&quot;5061&quot;,&quot;5169&quot;,&quot;5291&quot;,&quot;5368&quot;,&quot;5519&quot;,&quot;5688&quot;,&quot;5870&quot;,&quot;5990&quot;,&quot;6027&quot;,&quot;6175&quot;,&quot;6310&quot;,&quot;6498&quot;,&quot;6628&quot;,&quot;6637&quot;,&quot;6646&quot;,&quot;6794&quot;,&quot;6807&quot;,&quot;6918&quot;,&quot;6930&quot;,&quot;7049&quot;,&quot;7056&quot;,&quot;7064&quot;,&quot;7108&quot;,&quot;7125&quot;,&quot;7260&quot;,&quot;7280&quot;,&quot;7281&quot;,&quot;7605&quot;,&quot;7738&quot;,&quot;7871&quot;,&quot;8059&quot;,&quot;8324&quot;],&quot;y&quot;:[58.81470367591898,59.73228000877771,54.32357043235704,67.78091650973008,65.52083333333333,62.34217171717172,61.779518746502525,46.97986577181208,56.700167504187604,52.206154987022614,61.26126126126127,61.96888090963495,65.32258064516128,61.67919799498747,61.98178100018591,64.99999999999999,58.64978902953587,64.75917978063902,65.27293844367014,54.179104477611936,49.79919678714859,55.69160997732426,54.62478184991274,66.98903932946486,63.749797439637014,65.14539579967689,40.7056345444971,58.995815899581594,65.84419615145872,64.11483253588517,61.53846153846154,61.745589600742804,51.724137931034484,65.02732240437159,54.166666666666664,66.66666666666666,61.904761904761905,53.84615384615385,33.33333333333333,53.14553990610329,65.79091406677614,72.46376811594203,85.93012275731823,78.87139107611549,80.95238095238095,70.05267118133935,83.66013071895425,78.57815442561206,71.27217818044545,80.76923076923079,74.27626137303557,85.48474945533769,83.57487922705315,84.23236514522821,68.85749385749385,57.275803722504236,56.981981981981974,64.4355198572066,64.01869158878505,63.141025641025635,52.0,43.975785979300916]}},&quot;id&quot;:&quot;1650c1f7-993f-48d4-af77-ca9858301755&quot;,&quot;type&quot;:&quot;ColumnDataSource&quot;},{&quot;attributes&quot;:{&quot;plot&quot;:{&quot;id&quot;:&quot;18b2bf94-0495-4e00-a7c9-112d54a0d65d&quot;,&quot;subtype&quot;:&quot;Figure&quot;,&quot;type&quot;:&quot;Plot&quot;},&quot;ticker&quot;:{&quot;id&quot;:&quot;b68ddf38-bfa7-43cf-9979-3580bb375eb2&quot;,&quot;type&quot;:&quot;BasicTicker&quot;}},&quot;id&quot;:&quot;7dcd330d-921b-4751-9056-77067fecbcc3&quot;,&quot;type&quot;:&quot;Grid&quot;},{&quot;attributes&quot;:{&quot;formatter&quot;:{&quot;id&quot;:&quot;b01fbd84-b746-4a17-8849-b80a08ebf02e&quot;,&quot;type&quot;:&quot;BasicTickFormatter&quot;},&quot;plot&quot;:{&quot;id&quot;:&quot;18b2bf94-0495-4e00-a7c9-112d54a0d65d&quot;,&quot;subtype&quot;:&quot;Figure&quot;,&quot;type&quot;:&quot;Plot&quot;},&quot;ticker&quot;:{&quot;id&quot;:&quot;a244b401-5ee9-4ba0-b2c9-bce63052ee12&quot;,&quot;type&quot;:&quot;BasicTicker&quot;}},&quot;id&quot;:&quot;88a168c3-24f7-4506-952c-dd6f6812827c&quot;,&quot;type&quot;:&quot;LinearAxis&quot;},{&quot;attributes&quot;:{&quot;source&quot;:{&quot;id&quot;:&quot;1650c1f7-993f-48d4-af77-ca9858301755&quot;,&quot;type&quot;:&quot;ColumnDataSource&quot;}},&quot;id&quot;:&quot;dd6e4a55-b91c-4ad0-8aba-fa4b2ec728a6&quot;,&quot;type&quot;:&quot;CDSView&quot;},{&quot;attributes&quot;:{},&quot;id&quot;:&quot;a244b401-5ee9-4ba0-b2c9-bce63052ee12&quot;,&quot;type&quot;:&quot;BasicTicker&quot;},{&quot;attributes&quot;:{&quot;dimension&quot;:1,&quot;plot&quot;:{&quot;id&quot;:&quot;18b2bf94-0495-4e00-a7c9-112d54a0d65d&quot;,&quot;subtype&quot;:&quot;Figure&quot;,&quot;type&quot;:&quot;Plot&quot;},&quot;ticker&quot;:{&quot;id&quot;:&quot;a244b401-5ee9-4ba0-b2c9-bce63052ee12&quot;,&quot;type&quot;:&quot;BasicTicker&quot;}},&quot;id&quot;:&quot;757df94d-41b1-4c6b-b0d4-662a309919a6&quot;,&quot;type&quot;:&quot;Grid&quot;},{&quot;attributes&quot;:{},&quot;id&quot;:&quot;a6ba8181-9747-4a4f-8ed8-09da9b5e35ca&quot;,&quot;type&quot;:&quot;BasicTickFormatter&quot;},{&quot;attributes&quot;:{&quot;below&quot;:[{&quot;id&quot;:&quot;2c64a368-d0c5-40d3-b833-16882ef100ae&quot;,&quot;type&quot;:&quot;LinearAxis&quot;}],&quot;left&quot;:[{&quot;id&quot;:&quot;88a168c3-24f7-4506-952c-dd6f6812827c&quot;,&quot;type&quot;:&quot;LinearAxis&quot;}],&quot;plot_width&quot;:800,&quot;renderers&quot;:[{&quot;id&quot;:&quot;2c64a368-d0c5-40d3-b833-16882ef100ae&quot;,&quot;type&quot;:&quot;LinearAxis&quot;},{&quot;id&quot;:&quot;7dcd330d-921b-4751-9056-77067fecbcc3&quot;,&quot;type&quot;:&quot;Grid&quot;},{&quot;id&quot;:&quot;88a168c3-24f7-4506-952c-dd6f6812827c&quot;,&quot;type&quot;:&quot;LinearAxis&quot;},{&quot;id&quot;:&quot;757df94d-41b1-4c6b-b0d4-662a309919a6&quot;,&quot;type&quot;:&quot;Grid&quot;},{&quot;id&quot;:&quot;dfc8da7d-1c85-4461-a815-4469328db040&quot;,&quot;type&quot;:&quot;GlyphRenderer&quot;}],&quot;title&quot;:{&quot;id&quot;:&quot;a578e890-8702-4c14-a336-b1995467e65f&quot;,&quot;type&quot;:&quot;Title&quot;},&quot;toolbar&quot;:{&quot;id&quot;:&quot;993bb32a-d7df-47c0-8ed4-4c2aa680f2b8&quot;,&quot;type&quot;:&quot;Toolbar&quot;},&quot;x_range&quot;:{&quot;id&quot;:&quot;92e34a28-27f2-40af-8fd2-d6ae22470a59&quot;,&quot;type&quot;:&quot;DataRange1d&quot;},&quot;x_scale&quot;:{&quot;id&quot;:&quot;7f0924e1-7f46-4fa4-bd36-afb69b92fde5&quot;,&quot;type&quot;:&quot;LinearScale&quot;},&quot;y_range&quot;:{&quot;id&quot;:&quot;7814cd14-1330-441a-a36c-889074666f71&quot;,&quot;type&quot;:&quot;DataRange1d&quot;},&quot;y_scale&quot;:{&quot;id&quot;:&quot;6b06e08f-a5bf-48e8-bdc7-63feaed19c1a&quot;,&quot;type&quot;:&quot;LinearScale&quot;}},&quot;id&quot;:&quot;18b2bf94-0495-4e00-a7c9-112d54a0d65d&quot;,&quot;subtype&quot;:&quot;Figure&quot;,&quot;type&quot;:&quot;Plot&quot;},{&quot;attributes&quot;:{&quot;fill_color&quot;:{&quot;value&quot;:&quot;#1f77b4&quot;},&quot;line_color&quot;:{&quot;value&quot;:&quot;#1f77b4&quot;},&quot;size&quot;:{&quot;units&quot;:&quot;screen&quot;,&quot;value&quot;:10},&quot;x&quot;:{&quot;field&quot;:&quot;x&quot;},&quot;y&quot;:{&quot;field&quot;:&quot;y&quot;}},&quot;id&quot;:&quot;ceef80d4-9009-4f59-96e3-89d6a678a220&quot;,&quot;type&quot;:&quot;Circle&quot;},{&quot;attributes&quot;:{&quot;fill_alpha&quot;:{&quot;value&quot;:0.1},&quot;fill_color&quot;:{&quot;value&quot;:&quot;#1f77b4&quot;},&quot;line_alpha&quot;:{&quot;value&quot;:0.1},&quot;line_color&quot;:{&quot;value&quot;:&quot;#1f77b4&quot;},&quot;size&quot;:{&quot;units&quot;:&quot;screen&quot;,&quot;value&quot;:10},&quot;x&quot;:{&quot;field&quot;:&quot;x&quot;},&quot;y&quot;:{&quot;field&quot;:&quot;y&quot;}},&quot;id&quot;:&quot;14ba7200-15a3-4b9b-94ee-67390b1388b3&quot;,&quot;type&quot;:&quot;Circle&quot;},{&quot;attributes&quot;:{&quot;plot&quot;:null,&quot;text&quot;:&quot;Test accuracy for each MapSwipe project&quot;},&quot;id&quot;:&quot;a578e890-8702-4c14-a336-b1995467e65f&quot;,&quot;type&quot;:&quot;Title&quot;}],&quot;root_ids&quot;:[&quot;18b2bf94-0495-4e00-a7c9-112d54a0d65d&quot;]},&quot;title&quot;:&quot;Bokeh Application&quot;,&quot;version&quot;:&quot;0.12.13&quot;}};
+
+  var render_items = [{&quot;docid&quot;:&quot;91030c53-91f5-4ea7-9d3d-0164c661ba9f&quot;,&quot;elementid&quot;:&quot;f1b04ab3-5c9b-4909-a7c8-da0944335d64&quot;,&quot;modelid&quot;:&quot;18b2bf94-0495-4e00-a7c9-112d54a0d65d&quot;}];
+
+  root.Bokeh.embed.embed_items_notebook(docs_json, render_items);
+
+
+
+  }
+
+  if (root.Bokeh !== undefined) {
+
+    embed_document(root);
+
+  } else {
+
+    var attempts = 0;
+
+    var timer = setInterval(function(root) {
+
+      if (root.Bokeh !== undefined) {
+
+        embed_document(root);
+
+        clearInterval(timer);
+
+      }
+
+      attempts++;
+
+      if (attempts &gt; 100) {
+
+        console.log(&quot;Bokeh: ERROR: Unable to run BokehJS code because BokehJS library is missing&quot;)
+
+        clearInterval(timer);
+
+      }
+
+    }, 10, root)
+
+  }
+
+})(window);
+&lt;/script&gt;
+
+&lt;p&gt;In this figure, we’re graphing the project ID against the accuracy of the model. Project IDs are set at the time the project was created, and as time goes on newer projects get larger IDs. So, the x-axis represents the passage of time in an arbitrary &lt;em&gt;(unlikely to be anything like linear)&lt;/em&gt; scale. It’s interesting to note that there isn’t a huge amount of variety in the individual project accuracies (project 6027 is tiny, so it’s barely worth considering). The only real insight is that the model seems to be particularly effective in the Cambodia / Laos region (you can hover your mouse over a mark on the scatter plot to see some project details).&lt;/p&gt;
+&lt;h2 id=&quot;further-work&quot;&gt;Further work&lt;/h2&gt;
+
+&lt;p&gt;I think it’s pretty clear from what we’ve seen that a significant problem facing MapSwipe is data quality. A machine learning model is only as good as the data that goes into it, and mislabelled data could create confounding results for researchers trying to solve the problem. There are two obvious ways to try to solve this problem:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;To include a tile in the dataset, I required at least one vote for a particular category, and no votes for the others. I suspect that increasing the vote threshold would produce more accurate models. This will have the effect of lowering the number of tiles in the dataset though, which isn’t ideal. The other problem with this is that it’s not possible to do consistently - empty tiles aren’t explicitly marked as empty by MapSwipe users, they’re just not marked at all. It’s difficult to tell whether or not an image has been seen multiple times (although you can estimate it according to how often its explicitly marked neighbours have been viewed - this leads to its own problems in terms of bias though).&lt;/li&gt;
+  &lt;li&gt;We could request more votes from users for tiles that the model has confidently classified, but classified incorrectly according to the official MapSwipe data. This’ll require engineering, and user’s time, but I think it’s the most promising solution. To get a high quality model, a large amount of high quality data will be needed.&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;If we consider the engineering problem previously suggested, it provides an opportunity to consider a fundamentally different data model. I propose that the data model should consist of a set of tiles. For each tile, a number of questions can be asked. For instance, “Does this tile contain any buildings?”. The answer to this question is yes, no or maybe. Multiple questions can be assigned to a tile, which allows a tile to simultaneously contain buildings and be bad imagery (if it’s partially obscured by cloud), which can’t happen in the current model (but will act to confound many simple ML models). It also allows tiles to be explicitly marked as empty by users, as opposed to just being skipped, and not having any data recorded. This is critically important for training ML models in future, as the empty tiles are just as important as the built ones, and we must have a large amount of confidence in the training dataset’s annotations for both categories.&lt;/p&gt;
+
+&lt;hr /&gt;
+&lt;p&gt;&lt;em&gt;This post was automatically converted from &lt;a href=&quot;https://github.com/philiptromans/mapswipe-ml/tree/post-001/1%20-%20Analysing%20InceptionV3%20results.ipynb&quot;&gt;this&lt;/a&gt; Jupyter notebook.&lt;/em&gt;&lt;/p&gt;
+
+&lt;hr /&gt;</content><author><name>Philip Tromans</name></author><category term="missing-maps" /><category term="mapswipe" /><category term="ml" /><summary type="html">Much of the world isn’t mapped. This seems odd at first, but it basically comes down to a question of cash, and a large chunk of the world doesn’t have enough of it. Maps are important, and when big charities like the Red Cross, or Médecins Sans Frontières try to respond to crises, or run public health projects, the lack of mapping is a serious problem. This is why the Missing Maps project came into existence. It’s a volunteer project with the goal of putting the world’s most vulnerable people on the map. In more concrete terms, volunteers spend time pouring over satellite imagery, tracing over things like roads and buildings (you can learn more here), and this data’s then available for anyone to use. This is a time-consuming process, and much of the world is pretty empty (you don’t see many buildings in the rainforest, or the desert). The MapSwipe app was created to help accelerate the mapping process, by pre-filtering the tiles. MapSwipe users scroll through bits of satellite imagery (in a mobile app), and identify images with buildings and other features in (depending on the project). Once this data has been gathered it means that the mapping volunteers can maximize their productivity, by going straight to the tiles that need mapping and not waste their time pouring over large expanses of forest (say).</summary></entry></feed>
